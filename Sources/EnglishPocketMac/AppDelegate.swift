@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appModel = AppModel()
     private var serviceProvider: ServiceProvider!
     private var hotKeyController: GlobalHotKeyController!
+    private var overlayWindowController: OverlayWindowController!
     private let selectionReader = SelectionCaptureReader()
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureApplicationMenu()
         configureStatusItem()
         configurePopover()
+        configureOverlay()
         configureServices()
         configureGlobalCaptureIfNeeded()
         appModel.load()
@@ -78,8 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(rootView: RootView(model: appModel))
     }
 
+    private func configureOverlay() {
+        overlayWindowController = OverlayWindowController(model: appModel)
+    }
+
     private func configureServices() {
-        serviceProvider = ServiceProvider(model: appModel) { [weak self] in
+        serviceProvider = ServiceProvider(model: appModel, selectionReader: selectionReader) { [weak self] in
             self?.showPopover()
         }
         NSApp.servicesProvider = serviceProvider
@@ -111,10 +117,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 text: result.text,
                 sourceApp: result.sourceApp,
                 sourceTitle: result.method,
+                anchor: result.anchor,
                 action: .saveAndTranslate
             )
         )
-        showPopover()
     }
 
     @objc private func togglePopover() {

@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var dueLexemes: [Lexeme] = []
     @Published private(set) var pendingUITranslation: UITranslationRequest?
     @Published private(set) var translationQueueCount: Int = 0
+    @Published private(set) var overlayState: OverlayState?
     @Published var captureText: String = ""
     @Published var searchText: String = ""
     @Published var statusMessage: String = "Ready"
@@ -107,7 +108,19 @@ final class AppModel: ObservableObject {
             lastTranslation = translation
             lexemes = await store.all()
             dueLexemes = await store.due()
+            overlayState = OverlayState(
+                lexemeID: result.lexeme.id,
+                sourceText: result.lexeme.displayText,
+                translationText: translation?.targetText,
+                sourceLanguage: sourceLanguage,
+                targetLanguage: targetLanguage,
+                status: translation == nil ? .saving : .translating,
+                anchor: request.anchor ?? Self.mouseAnchor(strategy: "capture-mouse-fallback"),
+                sourceApp: request.sourceApp,
+                provider: translation?.provider
+            )
             if #available(macOS 26.0, *) {
+                overlayState?.status = .translated
                 statusMessage = result.didCreate ? "Saved: \(result.lexeme.displayText)" : "Updated: \(result.lexeme.displayText)"
             } else {
                 enqueueUITranslation(
@@ -149,6 +162,35 @@ final class AppModel: ObservableObject {
         logger.write("Deferred UI translation \(request.id.uuidString); queue depth \(queuedUITranslations.count)")
     }
 
+    func retryUITranslationAfterCancellation(requestID: UUID) {
+        guard var pending = pendingUITranslation, pending.id == requestID else { return }
+        let maxAttempts = 2
+
+        guard pending.cancellationRetries < maxAttempts else {
+            logger.write("UI translation cancelled repeatedly for \(pending.text); keeping fallback translation")
+            statusMessage = "Saved. Translation can be retried by capturing again."
+            advanceUITranslationQueue(after: requestID)
+            return
+        }
+
+        pending.cancellationRetries += 1
+        logger.write("UI translation cancelled for \(pending.text); retry \(pending.cancellationRetries)/\(maxAttempts)")
+        pendingUITranslation = nil
+        translationQueueCount = queuedUITranslations.count
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            if self.pendingUITranslation == nil {
+                self.pendingUITranslation = pending
+                self.logger.write("Restarted UI translation \(pending.id.uuidString) for \(pending.text)")
+            } else {
+                self.queuedUITranslations.insert(pending, at: 0)
+                self.translationQueueCount = self.queuedUITranslations.count
+                self.logger.write("Requeued cancelled UI translation \(pending.id.uuidString) for \(pending.text)")
+            }
+        }
+    }
+
     func applyUITranslation(_ translation: TranslationResult, requestID: UUID) {
         guard let pending = pendingUITranslation, pending.id == requestID else { return }
         let lexemeID = pending.lexemeID
@@ -157,6 +199,12 @@ final class AppModel: ObservableObject {
                 logger.write("Applying UI translation for \(pending.text): \(translation.targetText)")
                 _ = try await store.updateTranslation(id: lexemeID, translation: translation)
                 lastTranslation = translation
+                if var state = overlayState, state.lexemeID == lexemeID {
+                    state.translationText = translation.targetText
+                    state.provider = translation.provider
+                    state.status = .translated
+                    overlayState = state
+                }
                 lexemes = await store.all()
                 dueLexemes = await store.due()
                 statusMessage = "Translated with Apple Translation"
@@ -188,8 +236,12 @@ final class AppModel: ObservableObject {
     }
 
     func failUITranslation(_ error: Error, requestID: UUID) {
-        guard pendingUITranslation?.id == requestID else { return }
+        guard let pending = pendingUITranslation, pending.id == requestID else { return }
         logger.write("UI translation failed: \(error.localizedDescription)")
+        if var state = overlayState, state.lexemeID == pending.lexemeID {
+            state.status = .failed(error.localizedDescription)
+            overlayState = state
+        }
         statusMessage = "Saved. Translation unavailable: \(error.localizedDescription)"
         advanceUITranslationQueue(after: requestID)
     }
@@ -215,6 +267,10 @@ final class AppModel: ObservableObject {
     func cancelCurrentUITranslation() {
         guard let pending = pendingUITranslation else { return }
         logger.write("Cancelled UI translation \(pending.id.uuidString) for \(pending.text)")
+        if var state = overlayState, state.lexemeID == pending.lexemeID {
+            state.status = .cancelled
+            overlayState = state
+        }
         statusMessage = "Translation cancelled"
         advanceUITranslationQueue(after: pending.id)
     }
@@ -227,7 +283,12 @@ final class AppModel: ObservableObject {
         pendingUITranslation = nil
         queuedUITranslations.removeAll()
         translationQueueCount = 0
+        overlayState?.status = .cancelled
         statusMessage = "Translation tasks cancelled"
+    }
+
+    func dismissOverlay() {
+        overlayState = nil
     }
 
     func review(_ lexeme: Lexeme, grade: ReviewGrade) {
@@ -264,6 +325,7 @@ final class AppModel: ObservableObject {
                 dueLexemes = []
                 lastTranslation = nil
                 pendingUITranslation = nil
+                overlayState = nil
                 queuedUITranslations.removeAll()
                 translationQueueCount = 0
                 statusMessage = "Library cleared"
@@ -319,6 +381,11 @@ final class AppModel: ObservableObject {
     func quitApplication() {
         NSApp.terminate(nil)
     }
+
+    private static func mouseAnchor(strategy: String) -> CaptureAnchor {
+        let point = NSEvent.mouseLocation
+        return CaptureAnchor(x: point.x, y: point.y, width: 1, height: 1, strategy: strategy)
+    }
 }
 
 struct UITranslationRequest: Identifiable, Equatable {
@@ -327,4 +394,41 @@ struct UITranslationRequest: Identifiable, Equatable {
     var text: String
     var sourceLanguage: String
     var targetLanguage: String
+    var cancellationRetries: Int = 0
+}
+
+struct OverlayState: Identifiable, Equatable {
+    var id = UUID()
+    var lexemeID: UUID
+    var sourceText: String
+    var translationText: String?
+    var sourceLanguage: String
+    var targetLanguage: String
+    var status: OverlayStatus
+    var anchor: CaptureAnchor
+    var sourceApp: String
+    var provider: String?
+}
+
+enum OverlayStatus: Equatable {
+    case saving
+    case translating
+    case translated
+    case failed(String)
+    case cancelled
+
+    var label: String {
+        switch self {
+        case .saving:
+            "Saved"
+        case .translating:
+            "Translating"
+        case .translated:
+            "Translated"
+        case .failed:
+            "Translation failed"
+        case .cancelled:
+            "Cancelled"
+        }
+    }
 }

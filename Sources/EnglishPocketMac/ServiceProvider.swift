@@ -4,11 +4,13 @@ import EnglishPocketCore
 @MainActor
 final class ServiceProvider: NSObject {
     private let model: AppModel
+    private let selectionReader: SelectionCaptureReader
     private let showCaptureUI: () -> Void
     private let logger = AppLogger(category: "Services")
 
-    init(model: AppModel, showCaptureUI: @escaping () -> Void) {
+    init(model: AppModel, selectionReader: SelectionCaptureReader, showCaptureUI: @escaping () -> Void) {
         self.model = model
+        self.selectionReader = selectionReader
         self.showCaptureUI = showCaptureUI
     }
 
@@ -27,15 +29,21 @@ final class ServiceProvider: NSObject {
         }
 
         Task { @MainActor in
+            let anchor = selectionReader.currentSelectionAnchor() ?? Self.mouseAnchor()
             logger.write("Capturing selected text: \(TextNormalizer.displayText(text))")
             await model.capture(
                 CaptureRequest(
                     text: text,
                     sourceApp: NSWorkspace.shared.frontmostApplication?.localizedName ?? "",
+                    anchor: anchor,
                     action: .saveAndTranslate
                 )
             )
-            showCaptureUI()
         }
+    }
+
+    private static func mouseAnchor() -> CaptureAnchor {
+        let point = NSEvent.mouseLocation
+        return CaptureAnchor(x: point.x, y: point.y, width: 1, height: 1, strategy: "services-mouse")
     }
 }

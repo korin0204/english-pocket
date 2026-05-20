@@ -102,6 +102,7 @@ public struct CaptureRequest: Equatable, Sendable {
     public var sourceApp: String
     public var sourceTitle: String
     public var surroundingText: String
+    public var anchor: CaptureAnchor?
     public var action: CaptureAction
 
     public init(
@@ -109,13 +110,31 @@ public struct CaptureRequest: Equatable, Sendable {
         sourceApp: String = "",
         sourceTitle: String = "",
         surroundingText: String = "",
+        anchor: CaptureAnchor? = nil,
         action: CaptureAction = .saveAndTranslate
     ) {
         self.text = text
         self.sourceApp = sourceApp
         self.sourceTitle = sourceTitle
         self.surroundingText = surroundingText
+        self.anchor = anchor
         self.action = action
+    }
+}
+
+public struct CaptureAnchor: Codable, Equatable, Sendable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+    public var strategy: String
+
+    public init(x: Double, y: Double, width: Double, height: Double, strategy: String) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.strategy = strategy
     }
 }
 
@@ -158,4 +177,3 @@ public struct TranslationResult: Codable, Equatable, Sendable {
         self.provider = provider
     }
 }
-

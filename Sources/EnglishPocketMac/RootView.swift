@@ -1,10 +1,6 @@
 import EnglishPocketCore
 import SwiftUI
 
-#if canImport(Translation)
-@preconcurrency import Translation
-#endif
-
 struct RootView: View {
     @ObservedObject var model: AppModel
 
@@ -31,9 +27,6 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 420, minHeight: 520)
-        .overlay(alignment: .bottom) {
-            SystemTranslationResolver(model: model)
-        }
     }
 }
 
@@ -278,113 +271,6 @@ private struct LexemeSummary: View {
         }
     }
 }
-
-#if canImport(Translation)
-private struct SystemTranslationResolver: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Color.clear
-                .frame(width: 1, height: 1)
-
-            if let pending = model.pendingUITranslation {
-                TranslationTaskView(
-                    request: pending,
-                    queueCount: model.translationQueueCount,
-                    model: model
-                )
-                .id(pending.id)
-            }
-        }
-    }
-}
-
-private struct TranslationTaskView: View {
-    let request: UITranslationRequest
-    let queueCount: Int
-    @ObservedObject var model: AppModel
-    @State private var configuration: TranslationSession.Configuration?
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Translating \(request.text)")
-                    .font(.caption)
-                    .lineLimit(1)
-                Text("\(request.sourceLanguage.uppercased()) → \(request.targetLanguage.uppercased())" + (queueCount > 0 ? " · \(queueCount) queued" : ""))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Button {
-                model.cancelCurrentUITranslation()
-            } label: {
-                Image(systemName: "xmark.circle")
-            }
-            .buttonStyle(.borderless)
-            .help("Cancel current translation")
-
-            if queueCount > 0 {
-                Button {
-                    model.cancelAllUITranslations()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.borderless)
-                .help("Cancel all translation tasks")
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.bottom, 10)
-        .onAppear {
-            var nextConfiguration = TranslationSession.Configuration(
-                source: Locale.Language(identifier: request.sourceLanguage),
-                target: Locale.Language(identifier: request.targetLanguage)
-            )
-            nextConfiguration.invalidate()
-            configuration = nextConfiguration
-        }
-        .translationTask(configuration) { session in
-            guard model.pendingUITranslation?.id == request.id else {
-                return
-            }
-
-            do {
-                let response = try await session.translate(request.text)
-                let result = TranslationResult(
-                    sourceText: response.sourceText,
-                    targetText: response.targetText,
-                    sourceLanguage: response.sourceLanguage.languageCode?.identifier,
-                    targetLanguage: response.targetLanguage.languageCode?.identifier ?? request.targetLanguage,
-                    provider: "Apple Translation UI"
-                )
-                await MainActor.run {
-                    model.applyUITranslation(result, requestID: request.id)
-                }
-            } catch {
-                await MainActor.run {
-                    model.failUITranslation(error, requestID: request.id)
-                }
-            }
-        }
-    }
-}
-#else
-private struct SystemTranslationResolver: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        EmptyView()
-    }
-}
-#endif
 
 private struct SettingsView: View {
     @ObservedObject var model: AppModel
